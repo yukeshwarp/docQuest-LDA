@@ -9,15 +9,7 @@ python-docx
 celery
 redis
 azure-storage-blob
-streamlit
-redis
 docx
-tiktoken
-json
-uuid
-nltk
 scikit-learn
-numpy
 scipy
 gensim
-pandas
