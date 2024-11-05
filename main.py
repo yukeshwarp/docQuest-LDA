@@ -8,6 +8,15 @@ import io
 from docx import Document
 import uuid
 import tiktoken
+import gensim
+from gensim import corpora
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import nltk
+
+# Download NLTK data
+nltk.download('stopwords')
+nltk.download('punkt')
 
 def count_tokens(text, model="gpt-4o"):
     encoding = tiktoken.encoding_for_model(model)
@@ -29,13 +38,28 @@ if "chat_history" not in st.session_state:
 if "doc_token" not in st.session_state:
     st.session_state.doc_token = 0
 
+def preprocess_text_for_lda(text):
+    stop_words = set(stopwords.words("english"))
+    words = word_tokenize(text.lower())
+    return [word for word in words if word.isalpha() and word not in stop_words]
+
+def extract_topics(text, num_topics=3, num_words=5):
+    # Preprocess text for LDA
+    tokens = preprocess_text_for_lda(text)
+    dictionary = corpora.Dictionary([tokens])
+    corpus = [dictionary.doc2bow(tokens)]
+    
+    # Perform LDA topic modeling
+    lda_model = gensim.models.LdaModel(corpus, num_topics=num_topics, id2word=dictionary, passes=15)
+    topics = lda_model.print_topics(num_words=num_words)
+    
+    return topics
+
 def save_document_to_redis(session_id, file_name, document_data):
-    # Store document data with session-specific key in Redis
     redis_key = f"{session_id}:document_data:{file_name}"
     redis_client.set(redis_key, json.dumps(document_data))
 
 def get_document_from_redis(session_id, file_name):
-    # Retrieve and decode document data from Redis for this session
     redis_key = f"{session_id}:document_data:{file_name}"
     data = redis_client.get(redis_key)
     if data:
@@ -43,7 +67,6 @@ def get_document_from_redis(session_id, file_name):
     return None
 
 def retrieve_user_documents_from_redis(session_id):
-    # Fetch only the document data for the current session by matching keys with the session-specific prefix
     documents = {}
     for key in redis_client.keys(f"{session_id}:document_data:*"):
         file_name = key.decode().split(f"{session_id}:document_data:")[1]
@@ -53,7 +76,6 @@ def retrieve_user_documents_from_redis(session_id):
 def handle_question(prompt, spinner_placeholder):
     if prompt:
         try:
-            # Retrieve only the current user's document data from Redis
             documents_data = retrieve_user_documents_from_redis(st.session_state.session_id)
 
             with spinner_placeholder.container():
@@ -72,13 +94,12 @@ def handle_question(prompt, spinner_placeholder):
                     unsafe_allow_html=True,
                 )
 
-                # Call ask_question with Redis data
                 answer, tot_tokens = ask_question(documents_data, prompt, st.session_state.chat_history)
 
             st.session_state.chat_history.append(
                 {
                     "question": prompt,
-                    "answer":f"{answer}\nTotal tokens: {tot_tokens}",
+                    "answer": f"{answer}\nTotal tokens: {tot_tokens}",
                 }
             )
 
@@ -88,43 +109,18 @@ def handle_question(prompt, spinner_placeholder):
             spinner_placeholder.empty()
 
 def reset_session():
-    # Clear chat history and remove only current user's documents in Redis
     st.session_state.chat_history = []
-    st.session_state.doc_token = 0  # Reset token count
+    st.session_state.doc_token = 0
     for key in redis_client.keys(f"{st.session_state.session_id}:document_data:*"):
         redis_client.delete(key)
 
 def display_chat():
     if st.session_state.chat_history:
         for i, chat in enumerate(st.session_state.chat_history):
-            user_message = f"""
-            <div style='padding:10px; border-radius:10px; margin:5px 0; text-align:right;'>
-            {chat['question']}
-            </div>
-            """
-            assistant_message = f"""
-            <div style='padding:10px; border-radius:10px; margin:5px 0; text-align:left;'>
-            {chat['answer']}
-            </div>
-            """
+            user_message = f"<div style='padding:10px; border-radius:10px; margin:5px 0; text-align:right;'>{chat['question']}</div>"
+            assistant_message = f"<div style='padding:10px; border-radius:10px; margin:5px 0; text-align:left;'>{chat['answer']}</div>"
             st.markdown(user_message, unsafe_allow_html=True)
             st.markdown(assistant_message, unsafe_allow_html=True)
-
-            chat_content = {
-                "question": chat["question"],
-                "answer": chat["answer"],
-            }
-            doc = generate_word_document(chat_content)
-            word_io = io.BytesIO()
-            doc.save(word_io)
-            word_io.seek(0)
-
-            st.download_button(
-                label="↴",
-                data=word_io,
-                file_name=f"chat_{i+1}.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
 
 def generate_word_document(content):
     doc = Document()
@@ -167,9 +163,17 @@ with st.sidebar:
                         uploaded_file = future_to_file[future]
                         try:
                             document_data = future.result()
-                            st.session_state.doc_token += count_tokens(str(document_data))  # Increment persistent token count
+                            st.session_state.doc_token += count_tokens(str(document_data))
                             save_document_to_redis(st.session_state.session_id, uploaded_file.name, document_data)
-                            st.success(f"{uploaded_file.name} processed and saved to Redis!")
+                            
+                            # Extract topics and display in chat
+                            topics = extract_topics(str(document_data))
+                            topic_summary = "; ".join([f"Topic {i+1}: {topic[1]}" for i, topic in enumerate(topics)])
+                            st.session_state.chat_history.append(
+                                {"question": f"Topics from {uploaded_file.name}", "answer": topic_summary}
+                            )
+                            st.success(f"{uploaded_file.name} processed and topics extracted!")
+                            
                         except Exception as e:
                             st.error(f"Error processing {uploaded_file.name}: {e}")
 
