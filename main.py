@@ -8,8 +8,8 @@ import io
 from docx import Document
 import uuid
 import tiktoken
-import gensim
-from gensim import corpora
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.feature_extraction.text import CountVectorizer
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 import nltk
@@ -41,17 +41,25 @@ if "doc_token" not in st.session_state:
 def preprocess_text_for_lda(text):
     stop_words = set(stopwords.words("english"))
     words = word_tokenize(text.lower())
-    return [word for word in words if word.isalpha() and word not in stop_words]
+    return " ".join([word for word in words if word.isalpha() and word not in stop_words])
 
 def extract_topics(text, num_topics=3, num_words=5):
     # Preprocess text for LDA
-    tokens = preprocess_text_for_lda(text)
-    dictionary = corpora.Dictionary([tokens])
-    corpus = [dictionary.doc2bow(tokens)]
+    processed_text = preprocess_text_for_lda(text)
+    
+    # Use CountVectorizer to transform text data into a document-term matrix
+    vectorizer = CountVectorizer()
+    doc_term_matrix = vectorizer.fit_transform([processed_text])
     
     # Perform LDA topic modeling
-    lda_model = gensim.models.LdaModel(corpus, num_topics=num_topics, id2word=dictionary, passes=15)
-    topics = lda_model.print_topics(num_words=num_words)
+    lda_model = LatentDirichletAllocation(n_components=num_topics, random_state=0)
+    lda_model.fit(doc_term_matrix)
+    
+    # Extract topics
+    topics = []
+    for idx, topic in enumerate(lda_model.components_):
+        topic_terms = [vectorizer.get_feature_names_out()[i] for i in topic.argsort()[-num_words:][::-1]]
+        topics.append(f"Topic {idx + 1}: " + ", ".join(topic_terms))
     
     return topics
 
@@ -168,7 +176,7 @@ with st.sidebar:
                             
                             # Extract topics and display in chat
                             topics = extract_topics(str(document_data))
-                            topic_summary = "; ".join([f"Topic {i+1}: {topic[1]}" for i, topic in enumerate(topics)])
+                            topic_summary = "; ".join([f"{topic}" for topic in topics])
                             st.session_state.chat_history.append(
                                 {"question": f"Topics from {uploaded_file.name}", "answer": topic_summary}
                             )
